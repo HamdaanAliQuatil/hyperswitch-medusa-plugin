@@ -36,7 +36,7 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
   constructor(
     { logger }: InjectedDependencies,
     options: Options,
-    ...args: unknown[]
+    ...args: any[]
   ) {
     // @ts-expect-error - super() is not called
     super(...args);
@@ -44,10 +44,10 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     this.logger_ = logger;
     this.options_ = options;
 
-    this.client = new HyperswitchClinet();
+    this.client = new HyperswitchClinet(this.options_.apiKey);
   }
 
-  static validateOptions(options: Record<string | number | symbol, unknown>) {
+  static validateOptions(options: Record<string | number | symbol, any>) {
     if (!options.apiKey) {
       throw new MedusaError(
         MedusaError.Types.INVALID_DATA,
@@ -57,7 +57,7 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
   }
 
   async capturePayment(
-    paymentData: Record<string, unknown>
+    paymentData: Record<string, any>
   ): Promise<PaymentProviderError | PaymentProviderSessionResponse['data']> {
     const externalId = paymentData.id;
 
@@ -71,17 +71,17 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     } catch (e) {
       return {
         error: e,
-        code: 'unknown',
+        code: 'any',
         detail: e,
       };
     }
   }
 
   async createPaymentSession(
-    paymentData: Record<string, unknown>
+    paymentData: Record<string, any>
   ): Promise<PaymentProviderError | PaymentProviderSessionResponse['data']> {
     try {
-      const session = await this.client.createPaymentSession(paymentData);
+      const session = await this.client.createPaymentSession(paymentData.id, paymentData.customer_acceptance, paymentData.payment_method, paymentData.payment_method_data, paymentData.payment_method_type);
 
       return {
         ...session,
@@ -90,14 +90,14 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     } catch (e) {
       return {
         error: e,
-        code: 'unknown',
+        code: 'any',
         detail: e,
       };
     }
   }
 
   async retrievePaymentSession(
-    paymentData: Record<string, unknown>
+    paymentData: Record<string, any>
   ): Promise<PaymentProviderError | PaymentProviderSessionResponse['data']> {
     const externalId = paymentData.id;
 
@@ -111,15 +111,15 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     } catch (e) {
       return {
         error: e,
-        code: 'unknown',
+        code: 'any',
         detail: e,
       };
     }
   }
 
   async authorizePayment(
-    paymentSessionData: Record<string, unknown>,
-    context: Record<string, unknown>
+    paymentSessionData: Record<string, any>,
+    context: Record<string, any>
   ): Promise<
     PaymentProviderError | {
       status: PaymentSessionStatus
@@ -147,14 +147,14 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     } catch (e) {
       return {
         error: e,
-        code: "unknown",
+        code: "any",
         detail: e
       }
     }
   }
 
   async cancelPayment(
-    paymentData: Record<string, unknown>
+    paymentData: Record<string, any>
   ): Promise<PaymentProviderError | PaymentProviderSessionResponse["data"]> {
     const externalId = paymentData.id
 
@@ -164,7 +164,7 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     } catch (e) {
       return {
         error: e,
-        code: "unknown",
+        code: "any",
         detail: e
       }
     }
@@ -193,14 +193,14 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     } catch (e) {
       return {
         error: e,
-        code: "unknown",
+        code: "any",
         detail: e
       }
     }
   }
 
   async deletePayment(
-    paymentSessionData: Record<string, unknown>
+    paymentSessionData: Record<string, any>
   ): Promise<
     PaymentProviderError | PaymentProviderSessionResponse["data"]
   > {
@@ -211,14 +211,14 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     } catch (e) {
       return {
         error: e,
-        code: "unknown",
+        code: "any",
         detail: e
       }
     }
   }
 
   async getPaymentStatus(
-    paymentSessionData: Record<string, unknown>
+    paymentSessionData: Record<string, any>
   ): Promise<PaymentSessionStatus> {
     const externalId = paymentSessionData.id
 
@@ -241,7 +241,7 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
   }
 
   async refundPayment(
-    paymentData: Record<string, unknown>,
+    paymentData: Record<string, any>,
     refundAmount: number
   ): Promise<
     PaymentProviderError | PaymentProviderSessionResponse["data"]
@@ -261,7 +261,7 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     } catch (e) {
       return {
         error: e,
-        code: "unknown",
+        code: "any",
         detail: e
       }
     }
@@ -271,7 +271,7 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
   }
 
   async retrievePayment(
-    paymentSessionData: Record<string, unknown>
+    paymentSessionData: Record<string, any>
   ): Promise<
     PaymentProviderError | PaymentProviderSessionResponse["data"]
   > {
@@ -282,7 +282,7 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     } catch (e) {
       return {
         error: e,
-        code: "unknown",
+        code: "any",
         detail: e
       }
     }
@@ -318,7 +318,7 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     } catch (e) {
       return {
         error: e,
-        code: "unknown",
+        code: "any",
         detail: e
       }
     }
