@@ -1,0 +1,9 @@
+{
+  "name": "hyperswitch-medusa-plugin",
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "hyperswitch-medusa-plugin/src",
+  "projectType": "library",
+  "tags": [],
+  "// targets": "to see all targets run: nx show project hyperswitch-medusa-plugin --web",
+  "targets": {}
+}
