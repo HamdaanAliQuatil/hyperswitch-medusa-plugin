@@ -62,7 +62,7 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     const externalId = paymentData.id;
 
     try {
-      const newData = await this.client.capturePayment(externalId);
+      const newData = await this.client.hsPaymentsCapture(externalId, new BigNumber(100));
 
       return {
         ...newData,
@@ -77,46 +77,7 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     }
   }
 
-  async createPaymentSession(
-    paymentData: Record<string, any>
-  ): Promise<PaymentProviderError | PaymentProviderSessionResponse['data']> {
-    try {
-      const session = await this.client.createPaymentSession(paymentData.id, paymentData.customer_acceptance, paymentData.payment_method, paymentData.payment_method_data, paymentData.payment_method_type);
-
-      return {
-        ...session,
-        id: session.id,
-      };
-    } catch (e) {
-      return {
-        error: e,
-        code: 'any',
-        detail: e,
-      };
-    }
-  }
-
-  async retrievePaymentSession(
-    paymentData: Record<string, any>
-  ): Promise<PaymentProviderError | PaymentProviderSessionResponse['data']> {
-    const externalId = paymentData.id;
-
-    try {
-      const session = await this.client.retrievePaymentSession(externalId);
-
-      return {
-        ...session,
-        id: externalId,
-      };
-    } catch (e) {
-      return {
-        error: e,
-        code: 'any',
-        detail: e,
-      };
-    }
-  }
-
+  ///Authorizes a payment.
   async authorizePayment(
     paymentSessionData: Record<string, any>,
     context: Record<string, any>
@@ -129,7 +90,7 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     const externalId = paymentSessionData.id
 
     try {
-      const paymentData = await this.client.authorizePayment(externalId)
+      const paymentData = await this.client.hsPaymentsCompleteAuthorize(externalId, context)
 
       const contextData = {
         ...context
@@ -139,7 +100,7 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
 
       return {
         data: {
-          ...paymentData,
+          ...(typeof paymentData === 'object' ? paymentData : {}),
           id: externalId
         },
         status: null //TODO: Add status
@@ -159,7 +120,7 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     const externalId = paymentData.id
 
     try {
-      const paymentData = await this.client.cancelPayment(externalId)
+      const paymentData = await this.client.hsPaymentsCancel(externalId)
       console.log(paymentData)
     } catch (e) {
       return {
@@ -170,6 +131,7 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     }
   }
 
+  ///Creates a payment object when amount and currency are passed.
   async initiatePayment(
     context: CreatePaymentProviderSession
   ): Promise<PaymentProviderError | PaymentProviderSessionResponse> {
@@ -179,15 +141,18 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
       context: customerDetails
     } = context
 
+    console.log(customerDetails)
     try {
-      const response = await this.client.init(
-        amount, currency_code, customerDetails
+      const response = await this.client.hsPaymentsCreate(
+        new BigNumber(amount),
+        "recurring",
+        currency_code
       )
 
       return {
-        ...response,
+        ...(typeof response === 'object' ? response : {}),
         data: {
-          id: response.id
+          id: response.client_secret
         }
       }
     } catch (e) {
@@ -207,7 +172,7 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     const externalId = paymentSessionData.id
 
     try {
-      await this.client.cancelPayment(externalId)
+      await this.client.hsPaymentsDelete(externalId)
     } catch (e) {
       return {
         error: e,
@@ -223,7 +188,7 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     const externalId = paymentSessionData.id
 
     try {
-      const status = await this.client.getStatus(externalId)
+      const status = await this.client.hsPaymentsGetStatus(externalId)
 
       switch (status) {
         case "requires_capture":
@@ -249,9 +214,9 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     const externalId = paymentData.id
 
     try {
-      const newData = await this.client.refund(
+      const newData = await this.client.hsPaymentsRefund(
         externalId,
-        refundAmount
+        new BigNumber(refundAmount)
       )
 
       return {
@@ -270,6 +235,9 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
 
   }
 
+  ///Retrieves a Payment. 
+  ///This can also be used to get the status of a previously initiated payment 
+  ///or next action for an ongoing payment
   async retrievePayment(
     paymentSessionData: Record<string, any>
   ): Promise<
@@ -278,7 +246,12 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     const externalId = paymentSessionData.id
 
     try {
-      return await this.client.retrieve(externalId)
+      const result = await this.client.hsPaymentsRetrieve(externalId, "any", false, false, false)
+
+      return {
+        ...(typeof result === 'object' ? result : {}),
+        id: externalId
+      }
     } catch (e) {
       return {
         error: e,
@@ -288,6 +261,9 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     }
   }
 
+  ///To update the properties of a PaymentIntent object. 
+  ///This may include attaching a payment method, or attaching customer object 
+  ////or metadata fields after the Payment is created
   async updatePayment(
     context: UpdatePaymentProviderSession
   ): Promise<PaymentProviderError | PaymentProviderSessionResponse> {
@@ -297,22 +273,21 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
       context: customerDetails,
       data
     } = context
-    const externalId = data.id
+    const externalId = data.id as string
+
+    console.log(customerDetails)
+    console.log(currency_code)
 
     try {
-      const response = await this.client.update(
+      const response = await this.client.hsPaymentsUpdate(
         externalId,
-        {
-          amount,
-          currency_code,
-          customerDetails
-        }
+        new BigNumber(amount)
       )
 
       return {
-        ...response,
+        ...(typeof response === 'object' ? response : {}),
         data: {
-          id: response.id
+          id: externalId
         }
       }
     } catch (e) {
@@ -370,8 +345,6 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
       }
     }
   }
-
-
 }
 
 export default ModuleProvider(Modules.PAYMENT, {
