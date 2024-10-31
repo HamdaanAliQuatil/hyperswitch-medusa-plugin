@@ -101,23 +101,47 @@ class HyperswitchClient {
     }
 
     async hsPaymentsCancel(paymentId: string) {
-        return paymentId;
+        return this.request({
+            method: 'POST',
+            endpoint: `payments/${paymentId}/cancel`,
+        });
     }
     
     async hsPaymentsDelete(paymentId: string) {
         return paymentId;
     }
 
-    async hsPaymentsGetStatus(paymentId: string) {
-        return paymentId;
+    async hsPaymentsGetStatus(paymentId: string, merchantId: string, forceSync: boolean, expandCaptures: boolean, expandAttempts: boolean) {
+        interface PaymentResponse {
+            status: string;
+            [key: string]: any;
+        }
+        
+        const paymentResponse = await this.hsPaymentsRetrieve(
+            paymentId,
+            merchantId,
+            forceSync,
+            expandCaptures,
+            expandAttempts
+          ) as PaymentResponse;
+        
+        return paymentResponse.status;
     }
 
     async hsPaymentsRefund(paymentId: string, amount: BigNumber) {
-        return { paymentId, amount };
+        return this.request({
+            method: 'POST',
+            endpoint: `refunds`,
+            body: { paymentId, amount, "refund_type": "instant" },
+        });
     }
 
     async hsPaymentsCapture(paymentId: string, amount: BigNumber) {
-        return { paymentId, amount };
+        return this.request({
+            method: 'POST',
+            endpoint: `payments/${paymentId}/capture`,
+            body: { amount },
+        });
     }
 }
 

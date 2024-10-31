@@ -65,8 +65,8 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
       const newData = await this.client.hsPaymentsCapture(externalId, new BigNumber(100));
 
       return {
-        ...newData,
-        id: externalId,
+        ...(typeof newData === 'object' ? newData : {}),
+        id: externalId
       };
     } catch (e) {
       return {
@@ -188,7 +188,7 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
     const externalId = paymentSessionData.id
 
     try {
-      const status = await this.client.hsPaymentsGetStatus(externalId)
+      const status = await this.client.hsPaymentsGetStatus(externalId, "any", false, false, false)
 
       switch (status) {
         case "requires_capture":
@@ -220,7 +220,7 @@ class HyperswitchMedusaService extends AbstractPaymentProvider<Options> {
       )
 
       return {
-        ...newData,
+        ...(typeof newData === 'object' ? newData : {}),
         id: externalId
       }
     } catch (e) {
