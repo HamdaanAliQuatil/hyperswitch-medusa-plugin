@@ -8,7 +8,7 @@ class HyperswitchProviderService extends HyperswitchBase {
         super(_, options);
     }
 
-    get PaymentIntentOptions(): PaymentIntentOptions {
+    get paymentIntentOptions(): PaymentIntentOptions {
         return {}
     }
 }

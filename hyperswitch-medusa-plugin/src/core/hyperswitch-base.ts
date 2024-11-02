@@ -1,10 +1,10 @@
 import {
   AbstractPaymentProvider,
-  BigNumber,
   isDefined,
   isPaymentProviderError,
   isPresent,
   PaymentSessionStatus,
+  PaymentActions
 } from '@medusajs/framework/utils';
 
 import {
@@ -31,7 +31,6 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
   static identifier = 'hyperswitch-medusa-plugin';
   protected logger_: Logger;
   protected options_: Options;
-
   protected stripe_: Stripe;
 
   protected client;
@@ -128,19 +127,20 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
   async cancelPayment(
       paymentData: Record<string, any>
   ): Promise<PaymentProviderError | PaymentProviderSessionResponse["data"]> {
-      const externalId = paymentData.id
+      const externalId = paymentData.id as string
 
       try {
-          const paymentData = await this.client.hsPaymentsCancel(externalId)
-          console.log(paymentData)
-      } catch (e) {
-          return {
-              error: e,
-              code: "any",
-              detail: e
+          const intent = await this.stripe_.paymentIntents.cancel(externalId)
+          return intent as unknown as PaymentProviderSessionResponse['data']
+      } catch (error) {
+          if (error.payment_intent?.status === ErrorIntentStatus.CANCELED) {
+            return error.payment_intent
           }
+          
+          return this.buildError("An error occurred in cancelPayment", error)
+        }
       }
-  }
+  
 
   ///Creates a payment object when amount and currency are passed.
   async initiatePayment(
@@ -206,17 +206,7 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
   ): Promise<
       PaymentProviderError | PaymentProviderSessionResponse["data"]
   > {
-      const externalId = paymentSessionData.id
-
-      try {
-          await this.client.hsPaymentsDelete(externalId)
-      } catch (e) {
-          return {
-              error: e,
-              code: "any",
-              detail: e
-          }
-      }
+      return await this.cancelPayment(paymentSessionData)
   }
 
   ///Fetch the status of a payment
@@ -227,9 +217,9 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
 
       try {
           //TODO: Swap with Hyper-node service
-          const status = await this.client.hsPaymentsGetStatus(externalId, "any", false, false, false)
+          const paymentIntent = await this.stripe_.paymentIntents.retrieve(externalId)
 
-          switch (status) {
+          switch (paymentIntent.status) {
             case "requires_payment_method":
             case "requires_confirmation":
             case "processing":
@@ -329,50 +319,55 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
     }
   }
 
+  constructWebhookEvent(data: ProviderWebhookPayload["payload"]): Stripe.Event {
+    const signature = data.headers["stripe-signature"] as string
+
+    return this.stripe_.webhooks.constructEvent(
+      data.rawData as string | Buffer,
+      signature,
+      this.options_.webhookSecret
+    )
+  }
+
   async getWebhookActionAndData(
       payload: ProviderWebhookPayload["payload"]
   ): Promise<WebhookActionResult> {
-      const {
-          data,
-          rawData,
-          headers
-      } = payload
 
-      console.log(rawData)
-      console.log(headers)
+      const event = this.constructWebhookEvent(payload)
+      const intent = event.data.object as Stripe.PaymentIntent
 
-      try {
-          switch (data.event_type) {
-              case "authorized_amount":
-                  return {
-                      action: "authorized",
-                      data: {
-                          session_id: (data.metadata as Record<string, any>).session_id,
-                          amount: new BigNumber(data.amount as number)
-                      }
-                  }
-              case "success":
-                  return {
-                      action: "captured",
-                      data: {
-                          session_id: (data.metadata as Record<string, any>).session_id,
-                          amount: new BigNumber(data.amount as number)
-                      }
-                  }
-              default:
-                  return {
-                      action: "not_supported"
-                  }
-          }
-      } catch (e) {
-          console.log(e)
-          return {
-              action: "failed",
-              data: {
-                  session_id: (data.metadata as Record<string, any>).session_id,
-                  amount: new BigNumber(data.amount as number)
+      const { currency } = intent
+
+      switch (event.type) {
+          case "payment_intent.amount_capturable_updated":
+              return {
+                  action: PaymentActions.AUTHORIZED,
+                  data: {
+                      session_id: intent.metadata.session_id,
+                      amount: getAmountFromSmallestUnit(
+                          intent.amount_capturable,
+                          currency
+                      ),
+                  },
               }
-          }
+          case "payment_intent.succeeded":
+              return {
+                  action: PaymentActions.SUCCESSFUL,
+                  data: {
+                      session_id: intent.metadata.session_id,
+                      amount: getAmountFromSmallestUnit(intent.amount_received, currency),
+                  },
+              }
+          case "payment_intent.payment_failed":
+              return {
+                  action: PaymentActions.FAILED,
+                  data: {
+                      session_id: intent.metadata.session_id,
+                      amount: getAmountFromSmallestUnit(intent.amount, currency),
+                  },
+              }
+          default:
+              return { action: PaymentActions.NOT_SUPPORTED }
       }
   }
 
@@ -389,7 +384,7 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
         ? error.detail
         : error.message ?? "",
     }
+      }
   }
-}
 
 export default HyperswitchBase
