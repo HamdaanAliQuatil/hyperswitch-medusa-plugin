@@ -17,4 +17,14 @@ export interface PaymentIntentOptions {
     payment_method_types?: string[]
 }
 
-//TODO: Move Options Type here
+export type Options = {
+    apiKey: string;
+
+    webhookSecret: string;
+
+    capture?: boolean;
+
+    automaticPaymentMethods?: boolean;
+
+    paymentDescription?: string;
+  };

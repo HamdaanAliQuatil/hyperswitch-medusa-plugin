@@ -37,6 +37,8 @@
   },
   "dependencies": {
     "@babel/preset-env": "^7.25.7",
+    "@juspay-tech/hyper-node": "^1.0.3",
+    "@juspay-tech/hyperswitch-node": "^1.0.4",
     "@medusajs/framework": "^2.0.1",
     "babel-jest": "^29.7.0"
   }

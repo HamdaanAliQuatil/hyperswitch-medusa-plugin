@@ -2,6 +2,8 @@ import {
   AbstractPaymentProvider,
   BigNumber,
   isDefined,
+  isPaymentProviderError,
+  isPresent,
   PaymentSessionStatus,
 } from '@medusajs/framework/utils';
 
@@ -15,14 +17,14 @@ import {
   WebhookActionResult,
 } from '@medusajs/framework/types';
 
-import HyperswitchClinet from './apiservice';
+import Stripe from "@juspay-tech/hyper-node";
+
+import { ErrorCodes, ErrorIntentStatus, Options, PaymentIntentOptions } from '../types';
+import { EOL } from 'os';
+import { getAmountFromSmallestUnit, getSmallestUnit } from '../utils/utils';
 
 type InjectedDependencies = {
   logger: Logger;
-};
-
-type Options = {
-  apiKey: string;
 };
 
 abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
@@ -30,7 +32,7 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
   protected logger_: Logger;
   protected options_: Options;
 
-  //TODO: Add Hyper-node service
+  protected stripe_: Stripe;
 
   protected client;
 
@@ -51,58 +53,69 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
       this.logger_ = logger;
       this.options_ = options;
 
-      this.client = new HyperswitchClinet(options.apiKey);
+      this.client = new Stripe(options.apiKey, {
+        apiVersion: "2020-08-27"
+      });
   }
 
+  abstract get paymentIntentOptions(): PaymentIntentOptions
+
+  get options(): Options {
+    return this.options_
+  }
+
+  getPaymentIntentOptions(): PaymentIntentOptions {
+    const options: PaymentIntentOptions = {}
+
+    if (this?.paymentIntentOptions?.capture_method) {
+      options.capture_method = this.paymentIntentOptions.capture_method
+    }
+
+    if (this?.paymentIntentOptions?.setup_future_usage) {
+      options.setup_future_usage = this.paymentIntentOptions.setup_future_usage
+    }
+
+    if (this?.paymentIntentOptions?.payment_method_types) {
+      options.payment_method_types =
+        this.paymentIntentOptions.payment_method_types
+    }
+
+    return options
+  }
+
+  ///Captures a payment.
+  ///Capture the funds of an existing uncaptured PaymentIntent when its status is requires_capture.
+  ///Uncaptured PaymentIntents will be canceled a set number of days after they are created (7 by default).
   async capturePayment(
       paymentData: Record<string, any>
   ): Promise<PaymentProviderError | PaymentProviderSessionResponse['data']> {
-      const externalId = paymentData.id;
+      const externalId = paymentData.id as string
 
       try {
-          const newData = await this.client.hsPaymentsCapture(externalId, new BigNumber(100));
-
-          return {
-              ...(typeof newData === 'object' ? newData : {}),
-              id: externalId
-          };
-      } catch (e) {
-          return {
-              error: e,
-              code: 'any',
-              detail: e,
-          };
+          const intent = await this.stripe_.paymentIntents.capture(externalId)
+          return intent as unknown as PaymentProviderSessionResponse['data']
+      } catch (error) {
+        if (error.code === ErrorCodes.PAYMENT_INTENT_UNEXPECTED_STATE) {
+            if (error.payment_intent?.status === ErrorIntentStatus.SUCCEEDED) {
+              return error.payment_intent
+            }
+        }
       }
   }
 
   ///Authorizes a payment.
   async authorizePayment(
-      paymentSessionData: Record<string, any>,
-      context: Record<string, any>
+      paymentSessionData: Record<string, any>
   ): Promise<
       PaymentProviderError | {
           status: PaymentSessionStatus
           data: PaymentProviderSessionResponse["data"]
       }
   > {
-      const externalId = paymentSessionData.id
-
       try {
-          const paymentData = await this.client.hsPaymentsCompleteAuthorize(externalId, context)
+        const status = await this.getPaymentStatus(paymentSessionData)
 
-          const contextData = {
-              ...context
-          }
-
-          console.log(contextData)
-
-          return {
-              data: {
-                  ...(typeof paymentData === 'object' ? paymentData : {}),
-                  id: externalId
-              },
-              status: null //TODO: Add status
-          }
+        return { data: paymentSessionData, status }
       } catch (e) {
           return {
               error: e,
@@ -131,35 +144,61 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
 
   ///Creates a payment object when amount and currency are passed.
   async initiatePayment(
-      context: CreatePaymentProviderSession
+      input: CreatePaymentProviderSession
   ): Promise<PaymentProviderError | PaymentProviderSessionResponse> {
-      const {
-          amount,
-          currency_code,
-          context: customerDetails
-      } = context
+    const intentRequestData = this.getPaymentIntentOptions()
+    const { email, extra, session_id, customer } = input.context
+    const { currency_code, amount } = input
 
-      console.log(customerDetails)
+    const description = (extra?.payment_description ??
+      this.options_?.paymentDescription) as string
+
+    const intentRequest: Stripe.PaymentIntentCreateParams = {
+      description,
+      amount: getSmallestUnit(amount, currency_code),
+      currency: currency_code,
+      metadata: { session_id: session_id },
+      capture_method: this.options_.capture ? "automatic" : "manual",
+      ...intentRequestData,
+    }
+
+    if (this.options_?.automaticPaymentMethods) {
+      intentRequest.automatic_payment_methods = { enabled: true }
+    }
+
+    if (customer?.metadata?.stripe_id) {
+      intentRequest.customer = customer.metadata.stripe_id as string
+    } else {
+      let stripeCustomer
       try {
-          const response = await this.client.hsPaymentsCreate(
-              new BigNumber(amount),
-              "recurring",
-              currency_code
-          )
-
-          return {
-              ...(typeof response === 'object' ? response : {}),
-              data: {
-                  id: response.client_secret
-              }
-          }
+        stripeCustomer = await this.stripe_.customers.create({
+          email,
+        })
       } catch (e) {
-          return {
-              error: e,
-              code: "any",
-              detail: e
-          }
+        return this.buildError(
+          "An error occurred in initiatePayment when creating a Stripe customer",
+          e
+        )
       }
+
+      intentRequest.customer = stripeCustomer.id
+    }
+
+    let sessionData
+    try {
+      sessionData = (await this.stripe_.paymentIntents.create(
+        intentRequest
+      )) as unknown as Record<string, unknown>
+    } catch (e) {
+      return this.buildError(
+        "An error occurred in InitiatePayment during the creation of the stripe payment intent",
+        e
+      )
+    }
+
+    return {
+      data: sessionData
+    }
   }
 
   async deletePayment(
@@ -212,97 +251,82 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
   }
 
   async refundPayment(
-      paymentData: Record<string, any>,
+      paymentSessionData: Record<string, any>,
       refundAmount: number
   ): Promise<
       PaymentProviderError | PaymentProviderSessionResponse["data"]
   > {
-      const externalId = paymentData.id
+    const id = paymentSessionData.id as string
 
-      try {
-          const newData = await this.client.hsPaymentsRefund(
-              externalId,
-              new BigNumber(refundAmount)
-          )
+    try {
+      const { currency } = paymentSessionData
+      await this.stripe_.refunds.create({
+        amount: getSmallestUnit(refundAmount, currency as string),
+        payment_intent: id as string,
+      })
+    } catch (e) {
+      return this.buildError("An error occurred in refundPayment", e)
+    }
 
-          return {
-              ...(typeof newData === 'object' ? newData : {}),
-              id: externalId
-          }
-      } catch (e) {
-          return {
-              error: e,
-              code: "any",
-              detail: e
-          }
-      }
-
-
-
+    return paymentSessionData
   }
 
   ///Retrieves a Payment. 
   ///This can also be used to get the status of a previously initiated payment 
   ///or next action for an ongoing payment
   async retrievePayment(
-      paymentSessionData: Record<string, any>
-  ): Promise<
-      PaymentProviderError | PaymentProviderSessionResponse["data"]
-  > {
-      const externalId = paymentSessionData.id
+    paymentSessionData: Record<string, unknown>
+  ): Promise<PaymentProviderError | PaymentProviderSessionResponse["data"]> {
+    try {
+      const id = paymentSessionData.id as string
+      const intent = await this.stripe_.paymentIntents.retrieve(id)
 
-      try {
-          const result = await this.client.hsPaymentsRetrieve(externalId, "any", false, false, false)
+      intent.amount = getAmountFromSmallestUnit(intent.amount, intent.currency)
 
-          return {
-              ...(typeof result === 'object' ? result : {}),
-              id: externalId
-          }
-      } catch (e) {
-          return {
-              error: e,
-              code: "any",
-              detail: e
-          }
-      }
+      return intent as unknown as PaymentProviderSessionResponse["data"]
+    } catch (e) {
+      return this.buildError("An error occurred in retrievePayment", e)
+    }
   }
 
   ///To update the properties of a PaymentIntent object. 
   ///This may include attaching a payment method, or attaching customer object 
   ////or metadata fields after the Payment is created
   async updatePayment(
-      context: UpdatePaymentProviderSession
+    input: UpdatePaymentProviderSession
   ): Promise<PaymentProviderError | PaymentProviderSessionResponse> {
-      const {
-          amount,
-          currency_code,
-          context: customerDetails,
-          data
-      } = context
-      const externalId = data.id as string
+    const { context, data, currency_code, amount } = input
 
-      console.log(customerDetails)
-      console.log(currency_code)
+    const amountNumeric = getSmallestUnit(amount, currency_code)
+
+    const stripeId = context.customer?.metadata?.stripe_id
+
+    if (stripeId !== data.customer) {
+      const result = await this.initiatePayment(input)
+      if (isPaymentProviderError(result)) {
+        return this.buildError(
+          "An error occurred in updatePayment during the initiate of the new payment for the new customer",
+          result
+        )
+      }
+
+      return result
+    } else {
+      if (isPresent(amount) && data.amount === amountNumeric) {
+        return { data }
+      }
 
       try {
-          const response = await this.client.hsPaymentsUpdate(
-              externalId,
-              new BigNumber(amount)
-          )
+        const id = data.id as string
+        const sessionData = (await this.stripe_.paymentIntents.update(id, {
+          amount: amountNumeric,
+        })) as unknown as PaymentProviderSessionResponse["data"]
 
-          return {
-              ...(typeof response === 'object' ? response : {}),
-              data: {
-                  id: externalId
-              }
-          }
+        return { data: sessionData }
       } catch (e) {
-          return {
-              error: e,
-              code: "any",
-              detail: e
-          }
+        return this.buildError("An error occurred in updatePayment", e)
       }
+    }
   }
 
   async getWebhookActionAndData(
@@ -350,6 +374,21 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
               }
           }
       }
+  }
+
+  protected buildError(
+    message: string,
+    error: Stripe.StripeRawError | PaymentProviderError | Error
+  ): PaymentProviderError {
+    return {
+      error: message,
+      code: "code" in error ? error.code : "unknown",
+      detail: isPaymentProviderError(error)
+        ? `${error.error}${EOL}${error.detail ?? ""}`
+        : "detail" in error
+        ? error.detail
+        : error.message ?? "",
+    }
   }
 }
 
