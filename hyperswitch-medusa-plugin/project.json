@@ -5,21 +5,5 @@
   "projectType": "library",
   "tags": [],
   "// targets": "to see all targets run: nx show project hyperswitch-medusa-plugin --web",
-  "targets": {
-    "build": {
-      "executor": "@nx/rollup:rollup",
-      "options": {
-        "main": "./src/index.ts",
-        "format": ["esm", "cjs"],
-        "generateExportsField": true,
-        "tsConfig": "./tsconfig.json",
-        "outputPath": "../dist/packages/hyperswitch-medusa-plugin",
-        "project": "../package.json",
-        "additionalEntryPoints": [
-          "hyperswitch-medusa-plugin/src/lib/hyperswitch-medusa-plugin.ts",
-          "hyperswitch-medusa-plugin/src/lib/apiservice.ts"
-        ]
-      }
-    }
-  }
+  "targets": {}
 }
