@@ -22,6 +22,7 @@ import Stripe from "@juspay-tech/hyper-node";
 import { ErrorCodes, ErrorIntentStatus, Options, PaymentIntentOptions } from '../types';
 import { EOL } from 'os';
 import { getAmountFromSmallestUnit, getSmallestUnit } from '../utils/utils';
+import createChalkLogger from '../utils/logger';
 
 type InjectedDependencies = {
   logger: Logger;
@@ -49,7 +50,7 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
       // @ts-expect-error - super() is not called
       super(...args);
 
-      this.logger_ = logger;
+      this.logger_ = createChalkLogger(logger);
       this.options_ = options;
 
       this.client = new Stripe(options.apiKey, {
@@ -90,10 +91,14 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
   ): Promise<PaymentProviderError | PaymentProviderSessionResponse['data']> {
       const externalId = paymentData.id as string
 
+      const activityId = this.logger_.activity("Capturing payment");
+
       try {
+          this.logger_.progress(activityId, "Payment captured");
           const intent = await this.stripe_.paymentIntents.capture(externalId)
           return intent as unknown as PaymentProviderSessionResponse['data']
       } catch (error) {
+        this.logger_.error("An error occurred in capturePayment", error)
         if (error.code === ErrorCodes.PAYMENT_INTENT_UNEXPECTED_STATE) {
             if (error.payment_intent?.status === ErrorIntentStatus.SUCCEEDED) {
               return error.payment_intent
@@ -111,11 +116,14 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
           data: PaymentProviderSessionResponse["data"]
       }
   > {
+    const activityId = this.logger_.activity("Authorizing payment");
       try {
         const status = await this.getPaymentStatus(paymentSessionData)
 
+        this.logger_.progress(activityId, "Payment authorized");
         return { data: paymentSessionData, status }
       } catch (e) {
+        this.logger_.failure(activityId, "Error authorizing payment");
           return {
               error: e,
               code: "any",
@@ -125,23 +133,25 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
   }
 
   async cancelPayment(
-      paymentData: Record<string, any>
+    paymentData: Record<string, any>
   ): Promise<PaymentProviderError | PaymentProviderSessionResponse["data"]> {
-      const externalId = paymentData.id as string
-
-      try {
-          const intent = await this.stripe_.paymentIntents.cancel(externalId)
-          return intent as unknown as PaymentProviderSessionResponse['data']
-      } catch (error) {
-          if (error.payment_intent?.status === ErrorIntentStatus.CANCELED) {
-            return error.payment_intent
-          }
-          
-          return this.buildError("An error occurred in cancelPayment", error)
-        }
-      }
+    const externalId = paymentData.id as string
   
-
+    try {
+      const intent = await this.stripe_.paymentIntents.cancel(externalId)
+      this.logger_.success("Payment canceled successfully", intent.id)
+      return intent as unknown as PaymentProviderSessionResponse['data']
+    } catch (error) {
+      if (error.payment_intent?.status === ErrorIntentStatus.CANCELED) {
+        this.logger_.info("Payment was already canceled");
+        return error.payment_intent;
+      } else {
+        this.logger_.error("An error occurred while canceling the payment", error)
+        return this.buildError("An error occurred in cancelPayment", error)
+      }
+    }
+  }
+  
   ///Creates a payment object when amount and currency are passed.
   async initiatePayment(
       input: CreatePaymentProviderSession
@@ -150,6 +160,8 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
     const { email, extra, session_id, customer } = input.context
     const { currency_code, amount } = input
 
+    const activityId = this.logger_.activity("Creating Stripe payment intent")
+  
     const description = (extra?.payment_description ??
       this.options_?.paymentDescription) as string
 
@@ -169,35 +181,37 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
     if (customer?.metadata?.stripe_id) {
       intentRequest.customer = customer.metadata.stripe_id as string
     } else {
-      let stripeCustomer
+      this.logger_.activity("Creating Stripe customer", input)
       try {
-        stripeCustomer = await this.stripe_.customers.create({
+        const stripeCustomer = await this.stripe_.customers.create({
           email,
-        })
+        });
+        intentRequest.customer = stripeCustomer.id;
+        this.logger_.success("Hyperswitch customer created successfully", stripeCustomer.id);
       } catch (e) {
+        this.logger_.error("An error occurred while creating a Stripe customer", e)
         return this.buildError(
           "An error occurred in initiatePayment when creating a Stripe customer",
           e
         )
       }
-
-      intentRequest.customer = stripeCustomer.id
     }
-
-    let sessionData
+  
+    this.logger_.activity("Creating Stripe payment intent", intentRequest)
     try {
-      sessionData = (await this.stripe_.paymentIntents.create(
+      const sessionData = (await this.stripe_.paymentIntents.create(
         intentRequest
-      )) as unknown as Record<string, unknown>
+      )) as unknown as Record<string, unknown>;
+      this.logger_.success("Stripe payment intent created successfully", activityId)
+      return {
+        data: sessionData,
+      };
     } catch (e) {
+      this.logger_.error("An error occurred in InitiatePayment during the creation of the stripe payment intent", e)
       return this.buildError(
         "An error occurred in InitiatePayment during the creation of the stripe payment intent",
         e
       )
-    }
-
-    return {
-      data: sessionData
     }
   }
 
@@ -206,6 +220,7 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
   ): Promise<
       PaymentProviderError | PaymentProviderSessionResponse["data"]
   > {
+      this.logger_.activity("Deleting payment", paymentSessionData)
       return await this.cancelPayment(paymentSessionData)
   }
 
@@ -216,7 +231,7 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
       const externalId = paymentSessionData.id as string
 
       try {
-          //TODO: Swap with Hyper-node service
+          this.logger_.activity("Retrieving payment status", paymentSessionData)
           const paymentIntent = await this.stripe_.paymentIntents.retrieve(externalId)
 
           switch (paymentIntent.status) {
@@ -236,6 +251,7 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
               return PaymentSessionStatus.PENDING
           }
       } catch (e) {
+          this.logger_.error("An error occurred in getPaymentStatus", e)
           return e
       }
   }
@@ -249,12 +265,14 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
     const id = paymentSessionData.id as string
 
     try {
+      this.logger_.activity("Refunding payment", paymentSessionData)
       const { currency } = paymentSessionData
       await this.stripe_.refunds.create({
         amount: getSmallestUnit(refundAmount, currency as string),
         payment_intent: id as string,
       })
     } catch (e) {
+      this.logger_.error("An error occurred in refundPayment", e)
       return this.buildError("An error occurred in refundPayment", e)
     }
 
@@ -270,11 +288,13 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
     try {
       const id = paymentSessionData.id as string
       const intent = await this.stripe_.paymentIntents.retrieve(id)
-
+      
+      this.logger_.activity("Payment retrieved successfully", intent)
       intent.amount = getAmountFromSmallestUnit(intent.amount, intent.currency)
 
       return intent as unknown as PaymentProviderSessionResponse["data"]
     } catch (e) {
+      this.logger_.error("An error occurred in retrievePayment", e)
       return this.buildError("An error occurred in retrievePayment", e)
     }
   }
@@ -291,18 +311,23 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
 
     const stripeId = context.customer?.metadata?.stripe_id
 
+    const activityId = this.logger_.activity("Updating payment", input)
+
     if (stripeId !== data.customer) {
       const result = await this.initiatePayment(input)
       if (isPaymentProviderError(result)) {
+        this.logger_.error("An error occurred in updatePayment during the initiate of the new payment for the new customer")
         return this.buildError(
           "An error occurred in updatePayment during the initiate of the new payment for the new customer",
           result
         )
       }
 
+      this.logger_.success("Payment updated successfully", activityId)
       return result
     } else {
       if (isPresent(amount) && data.amount === amountNumeric) {
+        this.logger_.info("No changes to amount")
         return { data }
       }
 
@@ -312,8 +337,10 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
           amount: amountNumeric,
         })) as unknown as PaymentProviderSessionResponse["data"]
 
+        this.logger_.success("Payment updated successfully", activityId)
         return { data: sessionData }
       } catch (e) {
+        this.logger_.error("An error occurred in updatePayment", e)
         return this.buildError("An error occurred in updatePayment", e)
       }
     }
@@ -322,6 +349,7 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
   constructWebhookEvent(data: ProviderWebhookPayload["payload"]): Stripe.Event {
     const signature = data.headers["stripe-signature"] as string
 
+    this.logger_.activity("Constructing webhook event", data)
     return this.stripe_.webhooks.constructEvent(
       data.rawData as string | Buffer,
       signature,
@@ -337,9 +365,11 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
       const intent = event.data.object as Stripe.PaymentIntent
 
       const { currency } = intent
+      const activityId = this.logger_.activity("Processing webhook event", event)
 
       switch (event.type) {
-          case "payment_intent.amount_capturable_updated":
+          case "payment_intent.amount_capturable_updated":{
+              this.logger_.progress(activityId, "Payment intent amount capturable updated")
               return {
                   action: PaymentActions.AUTHORIZED,
                   data: {
@@ -350,7 +380,9 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
                       ),
                   },
               }
-          case "payment_intent.succeeded":
+            }
+          case "payment_intent.succeeded": {
+              this.logger_.progress(activityId, "Payment intent succeeded")
               return {
                   action: PaymentActions.SUCCESSFUL,
                   data: {
@@ -358,7 +390,9 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
                       amount: getAmountFromSmallestUnit(intent.amount_received, currency),
                   },
               }
-          case "payment_intent.payment_failed":
+            }
+          case "payment_intent.payment_failed": {
+              this.logger_.progress(activityId, "Payment intent payment failed")
               return {
                   action: PaymentActions.FAILED,
                   data: {
@@ -366,8 +400,11 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
                       amount: getAmountFromSmallestUnit(intent.amount, currency),
                   },
               }
-          default:
+            }
+          default: {
+              this.logger_.progress(activityId, "Payment intent not supported")
               return { action: PaymentActions.NOT_SUPPORTED }
+          }
       }
   }
 
@@ -375,6 +412,7 @@ abstract class HyperswitchBase extends AbstractPaymentProvider<Options> {
     message: string,
     error: Stripe.StripeRawError | PaymentProviderError | Error
   ): PaymentProviderError {
+    this.logger_.error(message, error as Error)
     return {
       error: message,
       code: "code" in error ? error.code : "unknown",
